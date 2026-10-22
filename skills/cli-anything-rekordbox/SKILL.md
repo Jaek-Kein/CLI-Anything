@@ -11,7 +11,7 @@ Agent-native CLI for Pioneer Rekordbox 6/7. Drives the DJ library and live decks
 ## Installation
 
 ```bash
-pip install -e .  # from rekordbox/agent-harness
+pip install -e .  # from the standalone repository root on RecordboxCLI
 # Only for live MIDI control:
 pip install -e '.[midi]'
 ```

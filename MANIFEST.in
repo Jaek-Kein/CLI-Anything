@@ -1,0 +1,5 @@
+include LICENSE NOTICE README.md LIBRARY_KO.md REKORDBOX.md rekordbox.ps1
+recursive-include examples *.json
+recursive-include skills *.md
+recursive-include cli_anything/rekordbox/data *.csv
+recursive-include cli_anything/rekordbox/skills *.md

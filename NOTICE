@@ -1,0 +1,20 @@
+RekordboxCLI
+
+Derived from HKUDS/CLI-Anything:
+https://github.com/HKUDS/CLI-Anything
+Original component: rekordbox/agent-harness
+Upstream base commit: 34f519533bc175d2fe287ab8316b0dd99bb9cc43
+
+Original authorship and package notices are retained in the source files and
+cli_anything/rekordbox/README.md. The upstream repository LICENSE is Apache-2.0;
+the original component's README and packaging metadata state MIT. Both notices
+are preserved here without asserting a change of license or resolving the
+upstream inconsistency (upstream issue #475 / pull request #498).
+
+Jaek-Kein fork changes:
+- 2026-10-22: library metadata export, native labels/My Tags/comments,
+  preview-first guarded updates, backups/undo, optional MIDI dependencies.
+- 2026-10-23: standalone RecordboxCLI branch, root-level package/install/docs,
+  rekordbox command alias, and standalone packaging/CI configuration.
+
+No CLI Hub or unrelated application harness is included in this branch's tree.

@@ -1,1 +1,0 @@
-"""Core OpenRefine harness primitives."""
