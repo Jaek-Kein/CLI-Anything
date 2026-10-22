@@ -19,10 +19,17 @@ def test_cli_help():
 
 
 def test_subcommand_help():
-    for sub in ["library", "playlist", "deck", "status", "install-mapping", "mix"]:
+    for sub in ["library", "tag", "playlist", "deck", "status", "install-mapping", "mix"]:
         r = subprocess.run([sys.executable, "-m", "cli_anything.rekordbox", sub, "--help"],
                            capture_output=True, text=True)
         assert r.returncode == 0, f"{sub} --help failed: {r.stderr}"
+
+
+def test_version_uses_explicit_distribution():
+    r = subprocess.run([sys.executable, "-m", "cli_anything.rekordbox", "--version"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "0.2.0" in r.stdout
 
 
 def test_playlist_write_options_are_documented():
@@ -69,7 +76,7 @@ def test_write_guard_creates_backup_before_write(monkeypatch, tmp_path):
         engine = FakeEngine()
 
     monkeypatch.setattr(rb, "_is_rekordbox_running", lambda: False)
-    monkeypatch.setattr(rb, "_open_db", lambda: FakeDb())
+    monkeypatch.setattr(rb, "_open_db", lambda **kwargs: FakeDb())
 
     db, safety = rb._open_db_for_write(force=False, backup=True, operation="create playlist")
 

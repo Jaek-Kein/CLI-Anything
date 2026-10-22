@@ -8,18 +8,23 @@ Combines:
   - Bunker.midi.csv mapping installer
 
 JSON output via --json for agent consumption.
+Modified for the Jaek-Kein fork, 2026-10-22: library metadata and guarded batch edits.
 """
 from __future__ import annotations
 import json
-import os
 import shutil
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import click
+
+from .core.metadata import content_query, serialize_track
+from .core.metadata_cli import tag, update, apply_changes
 
 PKG_DIR = Path(__file__).parent
 DATA_DIR = PKG_DIR / "data"
@@ -31,7 +36,7 @@ SKILL_DIR = PKG_DIR / "skills"
 def _emit(ctx: click.Context, payload):
     """Emit either JSON (when --json) or human-readable text."""
     if ctx.obj.get("json"):
-        click.echo(json.dumps(payload, default=str, indent=2))
+        click.echo(json.dumps(payload, default=str, ensure_ascii=False, indent=2))
     else:
         if isinstance(payload, dict):
             for k, v in payload.items():
@@ -43,22 +48,60 @@ def _emit(ctx: click.Context, payload):
             click.echo(payload)
 
 
-def _open_db():
+def _close_db(db):
+    if db.session is not None:
+        db.close()
+    db.engine.dispose()
+
+
+def _discover_db_path():
+    """Respect the configured library even when the application is on another drive."""
+    from pyrekordbox.config import get_config, get_pioneer_app_dir, read_rekordbox_settings
+    for version in ("rekordbox7", "rekordbox6"):
+        path = get_config(version).get("db_path")
+        if path:
+            return str(path)
+    settings = read_rekordbox_settings(get_pioneer_app_dir() / "rekordbox")
+    directory = settings.get("masterDbDirectory")
+    if not isinstance(directory, str) or not Path(directory).is_absolute():
+        raise ValueError("No absolute masterDbDirectory in rekordbox settings")
+    return str(Path(directory) / "master.db")
+
+
+def _open_db(*, writable=False):
     """Open rekordbox master.db."""
     try:
-        from pyrekordbox import Rekordbox6Database
+        from pyrekordbox import MasterDatabase
     except ImportError:
         raise click.ClickException("pyrekordbox not installed. Run: pip install pyrekordbox")
-    import warnings
-    warnings.filterwarnings("ignore")
-    return Rekordbox6Database(unlock=True)
+    from sqlalchemy import text
+    ctx = click.get_current_context(silent=True)
+    db_path = (ctx.find_root().obj or {}).get("db") if ctx is not None else None
+    db = None
+    try:
+        db_path = db_path or _discover_db_path()
+        db = MasterDatabase(path=db_path, unlock=True)
+        if not writable:
+            db.session.execute(text("PRAGMA query_only=ON"))
+    except Exception as exc:
+        if db is not None:
+            _close_db(db)
+        raise click.ClickException(f"Cannot open library: {exc}. Use --db PATH if auto-detection fails.") from exc
+    if ctx is not None:
+        ctx.call_on_close(lambda: _close_db(db))
+    return db
 
 
 def _is_rekordbox_running() -> bool:
-    """Best-effort process check using only the Python standard library."""
-    override = os.environ.get("CLI_ANYTHING_REKORDBOX_RUNNING")
-    if override is not None:
-        return override.strip().lower() in {"1", "true", "yes", "on"}
+    """Check process names with psutil, failing closed if the fallback is unavailable."""
+    try:
+        import psutil
+        return any((p.info["name"] or "").lower() in {"rekordbox", "rekordbox.exe"}
+                   for p in psutil.process_iter(["name"]))
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise click.ClickException(f"Cannot verify Rekordbox process state: {exc}") from exc
 
     try:
         if sys.platform == "win32":
@@ -68,6 +111,8 @@ def _is_rekordbox_running() -> bool:
                 text=True,
                 check=False,
             )
+            if result.returncode:
+                raise click.ClickException("Cannot verify Rekordbox process state; refusing writes")
             return "rekordbox.exe" in result.stdout.lower()
 
         names = ["rekordbox", "Rekordbox"]
@@ -81,7 +126,9 @@ def _is_rekordbox_running() -> bool:
     try:
         result = subprocess.run(["ps", "-A", "-o", "comm="], capture_output=True, text=True, check=False)
     except (FileNotFoundError, OSError):
-        return False
+        raise click.ClickException("Cannot verify Rekordbox process state; refusing writes")
+    if result.returncode:
+        raise click.ClickException("Cannot verify Rekordbox process state; refusing writes")
     return any(line.strip().lower() == "rekordbox" for line in result.stdout.splitlines())
 
 
@@ -94,20 +141,20 @@ def _db_path(db) -> Path:
 
 
 def _backup_database(db) -> list[str]:
-    """Copy master.db and SQLite sidecars before mutation."""
+    """Copy master.db and WAL before mutation; SHM is a rebuildable, locked index."""
     db_path = _db_path(db)
     if not db_path.exists():
         raise click.ClickException(f"Cannot back up missing database: {db_path}")
 
-    backup_dir = db_path.parent / "cli-anything-backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:12]
+    backup_dir = db_path.parent / "cli-anything-backups" / stamp
+    backup_dir.mkdir(parents=True, exist_ok=False)
     copied = []
 
-    for src in [db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")]:
+    for src in [db_path, Path(f"{db_path}-wal")]:
         if not src.exists():
             continue
-        dst = backup_dir / f"{src.name}.{stamp}.bak"
+        dst = backup_dir / src.name
         shutil.copy2(src, dst)
         copied.append(str(dst))
 
@@ -126,7 +173,7 @@ def _open_db_for_write(*, force: bool, backup: bool, operation: str):
     if running and not backup:
         raise click.ClickException("Refusing forced write while Rekordbox is running without a backup")
 
-    db = _open_db()
+    db = _open_db(writable=True)
     backup_paths = _backup_database(db) if backup else []
     return db, {"backup": backup_paths, "rekordbox_running": running, "forced": force}
 
@@ -140,7 +187,10 @@ def _commit_db_write(db):
 
 def _open_midi(port_substr: str):
     """Find + open MIDI port containing port_substr (case-insensitive)."""
-    import mido
+    try:
+        import mido
+    except ImportError as exc:
+        raise click.ClickException("MIDI extras not installed. From agent-harness run: pip install -e '.[midi]'") from exc
     candidates = [n for n in mido.get_output_names() if port_substr.lower() in n.lower()]
     if not candidates:
         raise click.ClickException(
@@ -153,12 +203,15 @@ def _open_midi(port_substr: str):
 
 @click.group(invoke_without_command=True)
 @click.option("--json", "json_out", is_flag=True, help="Emit JSON output (for agents).")
-@click.version_option()
+@click.option("--db", type=click.Path(exists=True, dir_okay=False), envvar="REKORDBOX_DB",
+              help="Explicit master.db path (or REKORDBOX_DB). Default: pyrekordbox auto-detection.")
+@click.version_option(package_name="cli-anything-rekordbox")
 @click.pass_context
-def cli(ctx: click.Context, json_out: bool):
-    """Pioneer Rekordbox 6/7 CLI — library writes + live-deck mixing."""
+def cli(ctx: click.Context, json_out: bool, db: Optional[str]):
+    """Pioneer Rekordbox 6/7 CLI - library metadata + optional MIDI control."""
     ctx.ensure_object(dict)
     ctx.obj["json"] = json_out
+    ctx.obj["db"] = db or ctx.obj.get("db")
     if ctx.invoked_subcommand is None:
         # REPL mode
         try:
@@ -178,7 +231,7 @@ def cli(ctx: click.Context, json_out: bool):
                     click.echo(cli.get_help(ctx))
                     continue
                 try:
-                    cli.main(args=line.split(), standalone_mode=False, obj=ctx.obj)
+                    cli.main(args=shlex.split(line), standalone_mode=False, obj=ctx.obj)
                 except SystemExit:
                     pass
                 except Exception as e:
@@ -205,44 +258,32 @@ def library_count(ctx):
 
 @library.command("search")
 @click.argument("query")
-@click.option("--limit", default=20)
+@click.option("--limit", default=20, type=click.IntRange(min=1))
 @click.pass_context
 def library_search(ctx, query: str, limit: int):
     """Find tracks by title/artist substring."""
     db = _open_db()
     out = []
-    for c in db.get_content():
+    for c in content_query(db):
         title = c.Title or ""
         artist = c.ArtistName or ""
         if query.lower() in title.lower() or query.lower() in artist.lower():
-            out.append({
-                "id": c.ID,
-                "title": title,
-                "artist": artist,
-                "bpm": (c.BPM / 100.0) if c.BPM else None,
-                "genre": getattr(getattr(c, "Genre", None), "Name", None),
-            })
+            out.append(serialize_track(c))
             if len(out) >= limit:
                 break
     _emit(ctx, out)
 
 
 @library.command("info")
-@click.argument("track_id", type=int)
+@click.argument("track_id")
 @click.pass_context
-def library_info(ctx, track_id: int):
+def library_info(ctx, track_id: str):
     """Show full metadata for a track."""
     db = _open_db()
-    c = next((c for c in db.get_content() if c.ID == track_id), None)
-    if not c:
+    c = db.get_content(ID=track_id)
+    if c is None:
         raise click.ClickException(f"track {track_id} not found")
-    _emit(ctx, {
-        "id": c.ID, "title": c.Title, "artist": c.ArtistName,
-        "bpm": (c.BPM / 100.0) if c.BPM else None,
-        "key": getattr(getattr(c, "Key", None), "Name", None),
-        "duration_ms": c.Length,
-        "file": c.FolderPath,
-    })
+    _emit(ctx, serialize_track(c))
 
 
 @library.command("dump")
@@ -251,14 +292,8 @@ def library_info(ctx, track_id: int):
 def library_dump(ctx, out_path: str):
     """Export full library as JSON."""
     db = _open_db()
-    rows = []
-    for c in db.get_content():
-        rows.append({
-            "id": c.ID, "title": c.Title, "artist": c.ArtistName,
-            "bpm": (c.BPM / 100.0) if c.BPM else None,
-            "file": c.FolderPath,
-        })
-    Path(out_path).write_text(json.dumps(rows, indent=2))
+    rows = [serialize_track(c) for c in content_query(db)]
+    Path(out_path).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     _emit(ctx, {"wrote": out_path, "tracks": len(rows)})
 
 
@@ -299,13 +334,15 @@ def playlist_create(ctx, name: str, force: bool, no_backup: bool):
 
 @playlist.command("add")
 @click.argument("playlist_name")
-@click.option("--track-title", required=True, help="Track title to search + add")
-@click.option("--track-id", type=int, help="Track ID (skips title search)")
+@click.option("--track-title", help="Track title to search + add")
+@click.option("--track-id", help="Exact track ID (preferred for agents)")
 @click.option("--force", is_flag=True, help="Allow write while Rekordbox is running after creating a backup.")
 @click.option("--no-backup", is_flag=True, help="Skip the pre-write master.db backup when Rekordbox is closed.")
 @click.pass_context
-def playlist_add(ctx, playlist_name: str, track_title: str, track_id: Optional[int], force: bool, no_backup: bool):
+def playlist_add(ctx, playlist_name: str, track_title: Optional[str], track_id: Optional[str], force: bool, no_backup: bool):
     """Add a track to a playlist."""
+    if bool(track_title) == bool(track_id):
+        raise click.UsageError("Provide exactly one of --track-id or --track-title")
     db = _open_db()
     pl = next((p for p in db.get_playlist() if p.Name == playlist_name), None)
     if not pl:
@@ -467,8 +504,8 @@ def deck_hot_cue(ctx, deck_n: int, slot: int, port: str):
         raise click.ClickException("slot must be 1..8")
     if deck_n not in (1, 2):
         raise click.ClickException("deck must be 1 or 2")
-    import mido
     p = _open_midi(port)
+    import mido
     ch = deck_n - 1
     note = slot - 1
     p.send(mido.Message("note_on", channel=ch, note=note, velocity=7))
@@ -484,8 +521,13 @@ def deck_hot_cue(ctx, deck_n: int, slot: int, port: str):
 @click.pass_context
 def status(ctx):
     """Report rekordbox runtime + DB + MIDI state."""
-    import mido
-    out = {"midi_outputs": mido.get_output_names()}
+    out = {"rekordbox_running": _is_rekordbox_running()}
+    try:
+        import mido
+        out["midi_outputs"] = mido.get_output_names()
+    except (ImportError, RuntimeError) as exc:
+        out["midi_outputs"] = []
+        out["midi_unavailable"] = str(exc)
     try:
         db = _open_db()
         out["db_path"] = str(db.engine.url.database)
@@ -538,7 +580,7 @@ def install_mapping(ctx, rekordbox_dir: Optional[str]):
 @click.option("--port", default="LoopBe")
 @click.pass_context
 def mix(ctx, track_a: str, track_b: str, secs: float, port: str):
-    """End-to-end: load track A on deck 1, load track B on deck 2, sync, crossfade."""
+    """Look up two tracks and print manual loading/transition instructions."""
     # Library lookup
     db = _open_db()
     ta = next((c for c in db.get_content() if c.Title and track_a.lower() in c.Title.lower()), None)
@@ -551,7 +593,15 @@ def mix(ctx, track_a: str, track_b: str, secs: float, port: str):
                 "next": "ensure both tracks are loaded on decks 1 + 2 (manual via rekordbox UI), then run: cli-anything-rekordbox deck crossfade 1 2 --secs " + str(secs)})
 
 
+cli.add_command(tag)
+library.add_command(update)
+library.add_command(apply_changes)
+
+
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     cli(obj={})
 
 

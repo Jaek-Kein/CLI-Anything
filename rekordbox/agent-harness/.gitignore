@@ -1,0 +1,6 @@
+.venv/
+work/
+*.db
+*.db-*
+cli-anything-backups/
+rekordbox_library.json

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "changes": [
+    {
+      "track_id": "REPLACE_WITH_TRACK_ID",
+      "expected_title": "REPLACE_WITH_EXACT_TITLE",
+      "append_comment": "작품: 작품명 / 용도: OP",
+      "add_tags": [
+        {"category_id": "4", "name": "작품명"}
+      ]
+    }
+  ]
+}

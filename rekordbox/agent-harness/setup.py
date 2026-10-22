@@ -4,6 +4,7 @@ setup.py for cli-anything-rekordbox
 
 Install: pip install -e .
 Publish: python -m build && twine upload dist/*
+Modified 2026-10-22: library-only base install; optional MIDI dependencies.
 """
 from setuptools import setup, find_namespace_packages
 
@@ -12,7 +13,7 @@ with open("cli_anything/rekordbox/README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="cli-anything-rekordbox",
-    version="0.1.0",
+    version="0.2.0",
     author="cli-anything contributors",
     author_email="",
     description="CLI harness for Pioneer Rekordbox - DJ library + live-deck control via SQLCipher direct DB access and virtual MIDI. Requires: rekordbox 6/7, optional virtual MIDI driver (loopMIDI / LoopBe / teVirtualMIDI on Windows).",
@@ -28,19 +29,17 @@ setup(
         "Topic :: Multimedia :: Sound/Audio :: MIDI",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
     ],
-    python_requires=">=3.10",
+    python_requires=">=3.11",
     install_requires=[
         "click>=8.0.0",
         "prompt-toolkit>=3.0.0",
-        "mido>=1.3.0",
-        "python-rtmidi>=1.5.0",
-        "pyrekordbox>=0.4.0",
+        "pyrekordbox>=0.5.0,<0.6",
     ],
     extras_require={
+        "midi": ["mido>=1.3.0", "python-rtmidi>=1.5.0"],
         "windows": ["pyautogui>=0.9.54", "pygetwindow>=0.0.9", "pywin32>=306"],
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
     },

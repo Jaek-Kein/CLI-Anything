@@ -1,6 +1,9 @@
 # cli-anything-rekordbox
 
-Agent-native command-line interface for **Pioneer Rekordbox 6/7**. Drives library writes (tracks, playlists, cues) and live-deck mixing (play/sync/crossfade) programmatically.
+Agent-native command-line interface for **Pioneer Rekordbox 6/7**.
+Modified for the Jaek-Kein fork, 2026-10-22: expanded metadata export, native My Tag
+creation/linking, comment editing, preview-first batch updates, backups and undo manifests.
+See [LIBRARY_KO.md](LIBRARY_KO.md) for the current library workflow.
 
 ## What it does
 
@@ -17,13 +20,15 @@ This harness combines (1) + (2) into a single CLI:
 ## Installation
 
 ```bash
-pip install cli-anything-rekordbox
+pip install -e .  # from rekordbox/agent-harness; no CLI Hub required
+# Optional live MIDI dependencies:
+pip install -e '.[midi]'
 # Optional Windows extras for live-deck UI automation:
 pip install cli-anything-rekordbox[windows]
 ```
 
 **Prerequisites:**
-- Python 3.10+
+- Python 3.11+
 - Rekordbox 6 or 7 installed (master.db must be locatable)
 - A virtual MIDI driver if you want live-deck control:
   - **Windows:** [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html), LoopBe, or teVirtualMIDI
@@ -48,7 +53,7 @@ cli-anything-rekordbox install-mapping            # one-time: drops Bunker.midi.
 cli-anything-rekordbox deck play --deck 1 --port "LoopBe"
 cli-anything-rekordbox deck crossfade 1 2 --secs 16
 
-# End-to-end: load + mix two tracks
+# Look up tracks and print manual load / crossfade instructions (does not mix automatically)
 cli-anything-rekordbox mix "Track A" "Track B" --secs 16
 
 # REPL mode
@@ -64,6 +69,13 @@ cli-anything-rekordbox
 | `search QUERY` | Find tracks by title/artist (substring) |
 | `info TRACK_ID` | Show full metadata for a track |
 | `dump --out tracks.json` | Export full library as JSON |
+| `update TRACK_ID [--append-comment TEXT] [--add-tag CATEGORY_ID NAME] [--apply]` | Preview/apply comment and native My Tag changes |
+| `apply FILE.json [--apply]` | Preview/apply a full batch atomically, or an undo manifest |
+
+`tag list` lists native My Tag category IDs and labels. Library exports include
+album, actual key, BPM, duration in seconds/milliseconds, comments, My Tag, rating,
+release year and file path. `--db PATH` selects a specific database or test snapshot.
+New metadata commands always require backup and a closed Rekordbox for `--apply`.
 
 ### `playlist`
 | Command | Description |
@@ -82,17 +94,15 @@ requires a backup. `--no-backup` is only accepted when Rekordbox is closed.
 | Command | Description |
 |---------|-------------|
 | `play --deck N` | Toggle play/pause |
-| `cue --deck N` | Cue button |
 | `sync --deck N` | Tempo sync |
 | `crossfade FROM TO --secs S` | Smooth crossfade between decks |
 | `eq --deck N --hi V --mid V --lo V` | EQ control (0..1) |
-| `tempo --deck N --offset V` | Pitch slider (-1..+1) |
 | `hot-cue --deck N --slot S` | Trigger hot cue 1-8 |
 
 ### High-level
 | Command | Description |
 |---------|-------------|
-| `mix A B --secs S` | Search+load A→deck1, B→deck2, sync, crossfade |
+| `mix A B --secs S` | Look up two tracks and print manual loading/crossfade instructions |
 | `install-mapping` | Copy Bunker.midi.csv into rekordbox's MidiMappings dir |
 | `status` | Report rekordbox running state, DB path, MIDI ports |
 
@@ -132,10 +142,13 @@ $ cli-anything-rekordbox --json library search "Daft Punk"
 
 ## Notes & caveats
 
-- **SQLCipher key** is auto-extracted by pyrekordbox from rekordbox.exe (the static rekordbox 6/7 master key, hardcoded across all installs).
+- **SQLCipher access** is handled by pyrekordbox 0.5.x.
 - **Library writes** require Rekordbox to be closed by default. Forced writes with `--force` are explicit, backed up first, and should be reserved for recovery/test workflows.
 - **Live-deck control** depends on the user mapping the virtual MIDI port in rekordbox `Preferences → Controller → MIDI` (one-time UI step). The harness ships `Bunker.midi.csv` and an `install-mapping` command to drop it into the right folder.
 - **Pioneer offers no playback REST API.** This is the closest thing.
 
 ## License
 MIT — same as parent CLI-Anything project.
+
+The above is an upstream notice preserved as-is. The repository-root LICENSE is
+Apache-2.0; upstream issue #475 / PR #498 track this inconsistency.
